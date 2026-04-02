@@ -116,6 +116,7 @@ class DownloadManager:
         self.lock = threading.Lock()
         self._cancel_flags: Dict[str, threading.Event] = {}
         self.error_callback = error_callback  # Callback for error reporting
+        self.load_history()
 
     def load_settings(self) -> Dict[str, Any]:
         """Load settings from JSON file"""
@@ -137,6 +138,41 @@ class DownloadManager:
                 json.dump(self.settings, f, indent=2)
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
+
+    def load_history(self):
+        """Load persisted download history from disk."""
+        history_path = Path.home() / '.ytdlp_gui' / 'history.json'
+        if not history_path.exists():
+            return
+        try:
+            with open(history_path) as f:
+                history = json.load(f)
+            for item in history:
+                if item.get('id') and item['id'] not in self.downloads:
+                    self.downloads[item['id']] = item
+        except Exception as e:
+            logger.warning(f"Failed to load history: {e}")
+
+    def save_history(self):
+        """Persist completed/failed/cancelled downloads to disk."""
+        history_path = Path.home() / '.ytdlp_gui' / 'history.json'
+        history_path.parent.mkdir(exist_ok=True)
+        finished = [
+            d for d in self.downloads.values()
+            if d['status'] in ('completed', 'failed', 'cancelled')
+        ]
+        finished.sort(key=lambda d: d.get('completed_at') or d.get('started_at') or datetime.min, reverse=True)
+        finished = finished[:200]
+        def serialise(d):
+            out = {}
+            for k, v in d.items():
+                out[k] = v.isoformat() if isinstance(v, datetime) else v
+            return out
+        try:
+            with open(history_path, 'w') as f:
+                json.dump([serialise(d) for d in finished], f, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to save history: {e}")
 
     def add_to_queue(self, url: str, quality: str = 'best', format_id: Optional[str] = None,
                        subtitles: str = 'none', subtitle_langs: List[str] = None) -> str:
@@ -255,16 +291,19 @@ class DownloadManager:
 
             download['status'] = 'completed'
             download['completed_at'] = datetime.now()
+            self.save_history()
             logger.info(f"Download completed: {download_id} - {download['title']}")
 
         except Exception as e:
             error_msg = str(e)
             if 'cancelled by user' in error_msg.lower():
                 download['status'] = 'cancelled'
+                self.save_history()
                 logger.info(f"Download cancelled: {download_id}")
             else:
                 download['status'] = 'failed'
                 download['error'] = error_msg
+                self.save_history()
                 logger.error(f"Download failed: {download_id} - {e}")
                 if self.error_callback:
                     self.error_callback(f'Download failed: {error_msg[:100]}...', error_msg)
@@ -656,6 +695,13 @@ Without FFmpeg, many downloads will fail!
         )
         open_btn.pack(side='left')
 
+        ttk.Button(
+            btn_frame,
+            text='Clear History',
+            command=self._clear_history,
+            style='TButton'
+        ).pack(side='left', padx=(10, 0))
+
     def setup_downloads_section(self, row):
         """Setup downloads tree view"""
         # Create frame for tree and scrollbar
@@ -923,6 +969,19 @@ View Count: {view_count or 'Unknown'}
             webbrowser.open(str(path))
         else:
             self.status_var.set('Download folder does not exist')
+
+    def _clear_history(self):
+        """Remove all completed/failed/cancelled entries from the list and history file."""
+        to_remove = [
+            did for did, d in self.download_manager.downloads.items()
+            if d['status'] in ('completed', 'failed', 'cancelled')
+        ]
+        for did in to_remove:
+            self.download_manager.downloads.pop(did, None)
+        history_path = Path.home() / '.ytdlp_gui' / 'history.json'
+        if history_path.exists():
+            history_path.unlink()
+        self.status_var.set(f'Cleared {len(to_remove)} history entries')
 
     def on_download_error(self, status_msg: str, error_details: str):
         """Handle download errors from DownloadManager"""
