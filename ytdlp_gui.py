@@ -18,6 +18,7 @@ from tkinter import ttk
 from tkinter.font import Font
 from typing import Dict, List, Optional, Any
 
+import subprocess
 import tkinter as tk
 import yt_dlp as youtube_dl
 from yt_dlp import YoutubeDL
@@ -343,8 +344,10 @@ class DownloadManager:
         logger.info(f"Download cancelled: {download_id}")
 
     def remove_download(self, download_id: str):
-        """Remove a finished/cancelled/failed download from the list."""
-        self.cancel_download(download_id)
+        """Remove a download from the list, cancelling it first if active."""
+        status = self.downloads.get(download_id, {}).get('status')
+        if status in ('downloading', 'queued'):
+            self.cancel_download(download_id)
         with self.lock:
             self.downloads.pop(download_id, None)
 
@@ -703,10 +706,13 @@ Without FFmpeg, many downloads will fail!
 
         tags = self.downloads_tree.item(row, 'tags')
         download_id = tags[0] if tags else None
-        if not download_id or download_id not in self.download_manager.downloads:
+        if not download_id:
+            return
+        info = self.download_manager.downloads.get(download_id)
+        if not info:
             return
 
-        status = self.download_manager.downloads[download_id]['status']
+        status = info['status']
         menu = tk.Menu(self, tearoff=0)
 
         if status in ('downloading', 'queued'):
@@ -719,7 +725,10 @@ Without FFmpeg, many downloads will fail!
         menu.add_separator()
         menu.add_command(label='Delete from List', command=lambda: self._ctx_delete(download_id))
 
-        menu.tk_popup(event.x_root, event.y_root)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.destroy()
 
     def _ctx_cancel(self, download_id: str):
         self.download_manager.cancel_download(download_id)
@@ -735,8 +744,6 @@ Without FFmpeg, many downloads will fail!
     def _open_file(self, download_id: str):
         path = self.download_manager.downloads.get(download_id, {}).get('file_path')
         if path and os.path.isfile(path):
-            import subprocess
-            import sys
             if sys.platform == 'win32':
                 os.startfile(path)
             elif sys.platform == 'darwin':
