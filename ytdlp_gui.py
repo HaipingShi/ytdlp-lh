@@ -457,7 +457,6 @@ class YTDLPGUI(ttk.Frame):
         if BUNDLED_FFMPEG_DIR:
             return True
         try:
-            import subprocess
             result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
             return result.returncode == 0
         except Exception:
