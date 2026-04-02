@@ -692,6 +692,59 @@ Without FFmpeg, many downloads will fail!
         scrollbar = ttk.Scrollbar(frame, orient='vertical', command=self.downloads_tree.yview)
         scrollbar.grid(row=0, column=1, sticky='ns')
         self.downloads_tree.configure(yscrollcommand=scrollbar.set)
+        self.downloads_tree.bind('<Button-3>', self._show_context_menu)
+
+    def _show_context_menu(self, event):
+        """Show right-click context menu for a download row."""
+        row = self.downloads_tree.identify_row(event.y)
+        if not row:
+            return
+        self.downloads_tree.selection_set(row)
+
+        tags = self.downloads_tree.item(row, 'tags')
+        download_id = tags[0] if tags else None
+        if not download_id or download_id not in self.download_manager.downloads:
+            return
+
+        status = self.download_manager.downloads[download_id]['status']
+        menu = tk.Menu(self, tearoff=0)
+
+        if status in ('downloading', 'queued'):
+            menu.add_command(label='Cancel', command=lambda: self._ctx_cancel(download_id))
+        if status in ('failed', 'cancelled'):
+            menu.add_command(label='Retry', command=lambda: self._ctx_retry(download_id))
+        if status == 'completed':
+            menu.add_command(label='Open File', command=lambda: self._open_file(download_id))
+            menu.add_command(label='Open Folder', command=self.open_download_folder)
+        menu.add_separator()
+        menu.add_command(label='Delete from List', command=lambda: self._ctx_delete(download_id))
+
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _ctx_cancel(self, download_id: str):
+        self.download_manager.cancel_download(download_id)
+        self.status_var.set('Download cancelled')
+
+    def _ctx_retry(self, download_id: str):
+        self.download_manager.retry_download(download_id)
+        self.status_var.set('Download re-queued')
+
+    def _ctx_delete(self, download_id: str):
+        self.download_manager.remove_download(download_id)
+
+    def _open_file(self, download_id: str):
+        path = self.download_manager.downloads.get(download_id, {}).get('file_path')
+        if path and os.path.isfile(path):
+            import subprocess
+            import sys
+            if sys.platform == 'win32':
+                subprocess.Popen(['explorer', '/select,', path])
+            elif sys.platform == 'darwin':
+                subprocess.Popen(['open', path])
+            else:
+                subprocess.Popen(['xdg-open', path])
+        else:
+            self.status_var.set('File not found')
 
     def setup_stats_section(self, row):
         """Setup statistics labels"""
@@ -1203,7 +1256,7 @@ Full log available in: ytdlp_gui.log
             )
 
             tag = status
-            self.downloads_tree.insert('', 'end', values=values, tags=(tag,))
+            self.downloads_tree.insert('', 'end', values=values, tags=(download_id, tag))
 
         # Configure row colors
         self.downloads_tree.tag_configure('completed', background='#d4edda')
