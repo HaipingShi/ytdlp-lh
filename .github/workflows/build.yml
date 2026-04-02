@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write   # needed to create/update releases
+
 jobs:
   build:
     runs-on: windows-latest
@@ -33,9 +36,12 @@ jobs:
         run: |
           python -m PyInstaller --onefile --windowed --collect-all yt_dlp --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --name YT-DLP-GUI ytdlp_gui.py
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: YT-DLP-GUI-Windows
-          path: dist/YT-DLP-GUI.exe
-          retention-days: 30
+          tag_name: latest
+          name: "YT-DLP GUI - Latest Build"
+          body: "Windows 免安装版，双击 YT-DLP-GUI.exe 即可使用，无需安装 Python 或 FFmpeg。"
+          prerelease: false
+          make_latest: true
+          files: dist/YT-DLP-GUI.exe
