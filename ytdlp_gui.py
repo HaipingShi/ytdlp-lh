@@ -35,6 +35,11 @@ def _find_bundled_ffmpeg() -> Optional[str]:
 
 BUNDLED_FFMPEG_DIR = _find_bundled_ffmpeg()
 
+def _progress_bar(pct: float, width: int = 8) -> str:
+    """Return a Unicode block progress bar, e.g. '████░░░░ 45%'"""
+    filled = round(pct / 100 * width)
+    return '█' * filled + '░' * (width - filled) + f' {pct:.0f}%'
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -51,7 +56,8 @@ DEFAULT_SETTINGS = {
     'download_dir': str(Path.home() / 'Downloads'),
     'max_concurrent': 3,
     'default_quality': 'best',
-    'theme': 'dark'
+    'theme': 'dark',
+    'speed_limit_kb': 0  # 0 = unlimited
 }
 
 # Quality presets with yt-dlp format strings
@@ -292,6 +298,11 @@ class DownloadManager:
             download['status'] = 'completed'
             download['completed_at'] = datetime.now()
             self.save_history()
+
+            # Show notification on Windows
+            title = download.get('title', 'Unknown') or 'Unknown'
+            YTDLPGUI._notify('Download Complete', title)
+
             logger.info(f"Download completed: {download_id} - {download['title']}")
 
         except Exception as e:
@@ -352,6 +363,11 @@ class DownloadManager:
             'writesubtitles': subtitles != 'none',
             'writeautomaticsub': subtitles in ['auto', 'all'],
         }
+
+        # Apply speed limit if set
+        speed_kb = self.settings.get('speed_limit_kb', 0)
+        if speed_kb and speed_kb > 0:
+            options['ratelimit'] = speed_kb * 1024  # yt_dlp expects bytes/s
 
         # Configure subtitle languages
         if subtitles != 'none':
@@ -797,6 +813,27 @@ Without FFmpeg, many downloads will fail!
                 subprocess.Popen(['xdg-open', path])
         else:
             self.status_var.set('File not found')
+
+    @staticmethod
+    def _notify(title: str, message: str):
+        """Show a Windows toast notification (fire-and-forget)."""
+        try:
+            script = (
+                f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
+                f"ContentType=WindowsRuntime] | Out-Null; "
+                f"$t = [Windows.UI.Notifications.ToastTemplateType]::ToastText02; "
+                f"$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($t); "
+                f"$x.GetElementsByTagName('text')[0].AppendChild($x.CreateTextNode('{title}')) | Out-Null; "
+                f"$x.GetElementsByTagName('text')[1].AppendChild($x.CreateTextNode('{message[:80]}')) | Out-Null; "
+                f"$n = [Windows.UI.Notifications.ToastNotification]::new($x); "
+                f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('YT-DLP GUI').Show($n)"
+            )
+            subprocess.Popen(
+                ['powershell', '-WindowStyle', 'Hidden', '-Command', script],
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+        except Exception:
+            pass  # 通知是尽力而为，绝不让它崩溃应用
 
     def setup_stats_section(self, row):
         """Setup statistics labels"""
@@ -1245,6 +1282,16 @@ Full log available in: ytdlp_gui.log
         concurrent_spin = ttk.Spinbox(concurrent_frame, from_=1, to=10, textvariable=concurrent_var, width=5)
         concurrent_spin.pack(side='left', padx=10)
 
+        # Speed limit
+        speed_frame = ttk.Frame(dialog, style='TFrame')
+        speed_frame.pack(fill='x', padx=20, pady=10)
+
+        ttk.Label(speed_frame, text='Speed Limit (KB/s, 0 = unlimited):',
+                 background=self.bg_color, foreground=self.fg_color).pack(side='left')
+
+        speed_var = tk.IntVar(value=self.download_manager.settings.get('speed_limit_kb', 0))
+        ttk.Spinbox(speed_frame, from_=0, to=100000, textvariable=speed_var, width=8).pack(side='left', padx=10)
+
         # Theme
         theme_frame = ttk.Frame(dialog, style='TFrame')
         theme_frame.pack(fill='x', padx=20, pady=10)
@@ -1264,6 +1311,7 @@ Full log available in: ytdlp_gui.log
             self.download_manager.settings['download_dir'] = dir_var.get()
             self.download_manager.settings['max_concurrent'] = concurrent_var.get()
             self.download_manager.settings['theme'] = self.current_theme.get()
+            self.download_manager.settings['speed_limit_kb'] = speed_var.get()
             self.download_manager.save_settings()
             self.apply_theme()
             dialog.destroy()
@@ -1309,7 +1357,10 @@ Full log available in: ytdlp_gui.log
             if isinstance(progress, str) and '%' in progress:
                 progress = progress.strip('%')
 
-            progress = f"{progress}%"
+            try:
+                progress = _progress_bar(float(progress))
+            except (ValueError, TypeError):
+                progress = f"{progress}%"
 
             values = (
                 status.upper(),
