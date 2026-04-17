@@ -41,11 +41,13 @@ def _progress_bar(pct: float, width: int = 8) -> str:
     return '█' * filled + '░' * (width - filled) + f' {pct:.0f}%'
 
 # Configure logging
+_log_dir = Path.home() / '.dlcart'
+_log_dir.mkdir(exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('dlcart.log'),
+        logging.FileHandler(_log_dir / 'dlcart.log'),
         logging.StreamHandler()
     ]
 )
@@ -114,7 +116,7 @@ SUBTITLE_LANGS = {
 class DownloadManager:
     """Manages yt-dlp downloads"""
 
-    def __init__(self, error_callback=None):
+    def __init__(self, error_callback=None, gui_root=None):
         self.downloads: Dict[str, Dict[str, Any]] = {}
         self.active_downloads: set = set()
         self.settings: Dict[str, Any] = self.load_settings()
@@ -122,6 +124,7 @@ class DownloadManager:
         self.lock = threading.Lock()
         self._cancel_flags: Dict[str, threading.Event] = {}
         self.error_callback = error_callback  # Callback for error reporting
+        self.gui_root = gui_root  # Tkinter root for thread-safe scheduling
         self.load_history()
 
     def load_settings(self) -> Dict[str, Any]:
@@ -228,7 +231,9 @@ class DownloadManager:
 
     def download_video(self, download_id: str):
         """Download a video using yt-dlp"""
-        download = self.downloads[download_id]
+        download = self.downloads.get(download_id)
+        if download is None:
+            return
         cancel_flag = threading.Event()
         self._cancel_flags[download_id] = cancel_flag
 
@@ -244,7 +249,11 @@ class DownloadManager:
                 if cancel_flag.is_set():
                     raise Exception("Download cancelled by user")
                 if d['status'] == 'downloading':
-                    download['progress'] = d.get('_percent_str', '0%').strip('%')
+                    raw = d.get('_percent_str', '0%').strip('%')
+                    try:
+                        download['progress'] = float(raw)
+                    except (ValueError, TypeError):
+                        download['progress'] = 0
                     download['speed'] = d.get('_speed_str')
                     download['eta'] = d.get('_eta_str')
                     download['downloaded_bytes'] = d.get('downloaded_bytes', 0)
@@ -317,7 +326,12 @@ class DownloadManager:
                 self.save_history()
                 logger.error(f"Download failed: {download_id} - {e}")
                 if self.error_callback:
-                    self.error_callback(f'Download failed: {error_msg[:100]}...', error_msg)
+                    # Schedule on the main thread to avoid Tkinter threading issues
+                    if self.gui_root:
+                        self.gui_root.after(0, lambda: self.error_callback(
+                            f'Download failed: {error_msg[:100]}...', error_msg))
+                    else:
+                        self.error_callback(f'Download failed: {error_msg[:100]}...', error_msg)
 
         finally:
             with self.lock:
@@ -391,11 +405,12 @@ class DownloadManager:
             flag = self._cancel_flags.get(download_id)
         if flag:
             flag.set()
-        # Remove from queue if not yet started
+        # Remove from queue and update status atomically
         with self.lock:
             if download_id in self.queue:
                 self.queue.remove(download_id)
-        self.downloads[download_id]['status'] = 'cancelled'
+            if download_id in self.downloads:
+                self.downloads[download_id]['status'] = 'cancelled'
         logger.info(f"Download cancelled: {download_id}")
 
     def remove_download(self, download_id: str):
@@ -424,7 +439,7 @@ class YTDLPGUI(ttk.Frame):
     def __init__(self, master=None):
         super().__init__(master)
         self.master = master
-        self.download_manager = DownloadManager(error_callback=self.on_download_error)
+        self.download_manager = DownloadManager(error_callback=self.on_download_error, gui_root=master)
         self.current_theme = tk.StringVar(value=self.download_manager.settings.get('theme', 'dark'))
         self.ffmpeg_available = False
 
@@ -818,20 +833,37 @@ Without FFmpeg, many downloads will fail!
     def _notify(title: str, message: str):
         """Show a Windows toast notification (fire-and-forget)."""
         try:
-            script = (
-                f"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
-                f"ContentType=WindowsRuntime] | Out-Null; "
-                f"$t = [Windows.UI.Notifications.ToastTemplateType]::ToastText02; "
-                f"$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($t); "
-                f"$x.GetElementsByTagName('text')[0].AppendChild($x.CreateTextNode('{title}')) | Out-Null; "
-                f"$x.GetElementsByTagName('text')[1].AppendChild($x.CreateTextNode('{message[:80]}')) | Out-Null; "
-                f"$n = [Windows.UI.Notifications.ToastNotification]::new($x); "
-                f"[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('独轮车 DL Cart').Show($n)"
-            )
+            # Use a temp file to pass title/message safely, avoiding
+            # command-injection via video titles that contain PowerShell
+            # metacharacters (quotes, dollar signs, backticks, etc.).
+            with tempfile.NamedTemporaryFile('w', suffix='.ps1', delete=False,
+                                             encoding='utf-8') as f:
+                f.write(f'$toastTitle = @\'\n{title}\n\'@\n')
+                f.write(f'$toastMsg = @\'\n{message[:80]}\n\'@\n')
+                f.write(
+                    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
+                    "ContentType=WindowsRuntime] | Out-Null; "
+                    "$t = [Windows.UI.Notifications.ToastTemplateType]::ToastText02; "
+                    "$x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($t); "
+                    "$x.GetElementsByTagName('text')[0].AppendChild($x.CreateTextNode($toastTitle)) | Out-Null; "
+                    "$x.GetElementsByTagName('text')[1].AppendChild($x.CreateTextNode($toastMsg)) | Out-Null; "
+                    "$n = [Windows.UI.Notifications.ToastNotification]::new($x); "
+                    "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('独轮车 DL Cart').Show($n)"
+                )
+                script_path = f.name
+
             subprocess.Popen(
-                ['powershell', '-WindowStyle', 'Hidden', '-Command', script],
+                ['powershell', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass',
+                 '-File', script_path],
                 creationflags=0x08000000  # CREATE_NO_WINDOW
             )
+            # Clean up temp file after a short delay (PowerShell reads it quickly)
+            def _cleanup():
+                try:
+                    os.unlink(script_path)
+                except OSError:
+                    pass
+            threading.Timer(5.0, _cleanup).start()
         except Exception:
             pass  # 通知是尽力而为，绝不让它崩溃应用
 
@@ -856,7 +888,10 @@ Without FFmpeg, many downloads will fail!
     def create_tooltip(self, widget, text):
         """Simple tooltip implementation"""
         def show(event):
-            x, y, _, _ = widget.bbox()
+            bbox = widget.bbox()
+            if not bbox:
+                return
+            x, y, _, _ = bbox
             x += widget.winfo_rootx() + 25
             y += widget.winfo_rooty() + 25
 
@@ -981,13 +1016,15 @@ View Count: {view_count or 'Unknown'}
             return
 
         quality = self.quality_var.get()
+        subtitle_key = self.subtitle_key_from_value.get(self.subtitle_var.get(), 'none')
+        format_id = self.format_var.get() if hasattr(self, 'format_var') and self.format_var.get() else None
 
-        if add_to_queue:
-            download_id = self.download_manager.add_to_queue(url, quality)
-            self.status_var.set('Added to queue')
-        else:
-            download_id = self.download_manager.add_to_queue(url, quality)
-            self.status_var.set('Download started')
+        download_id = self.download_manager.add_to_queue(
+            url, quality,
+            format_id=format_id,
+            subtitles=subtitle_key
+        )
+        self.status_var.set('Added to queue' if add_to_queue else 'Download started')
 
         # Clear URL field
         self.clear_url()
@@ -1353,9 +1390,6 @@ Full log available in: dlcart.log
         for download_id, download in self.download_manager.downloads.items():
             status = download['status']
             progress = download.get('progress', 0)
-
-            if isinstance(progress, str) and '%' in progress:
-                progress = progress.strip('%')
 
             try:
                 progress = _progress_bar(float(progress))
