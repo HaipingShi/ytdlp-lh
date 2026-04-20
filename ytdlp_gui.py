@@ -19,10 +19,18 @@ from tkinter.font import Font
 from typing import Dict, List, Optional, Any
 
 import subprocess
+import time
 import tkinter as tk
 import yt_dlp as youtube_dl
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
+
+try:
+    from douyin_extractor import is_douyin_url, DouyinBrowserExtractor, DouyinExtractionError
+except ImportError:
+    # Playwright not installed - Douyin browser extraction unavailable
+    is_douyin_url = lambda url: False
+    DouyinExtractionError = Exception
 
 # When running as a PyInstaller --onefile exe, bundled files are extracted
 # to a temp dir exposed via sys._MEIPASS. Detect ffmpeg.exe there so
@@ -117,7 +125,7 @@ SUBTITLE_LANGS = {
 class DownloadManager:
     """Manages yt-dlp downloads"""
 
-    def __init__(self, error_callback=None, gui_root=None):
+    def __init__(self, error_callback=None, gui_root=None, status_callback=None):
         self.downloads: Dict[str, Dict[str, Any]] = {}
         self.active_downloads: set = set()
         self.settings: Dict[str, Any] = self.load_settings()
@@ -126,6 +134,7 @@ class DownloadManager:
         self._cancel_flags: Dict[str, threading.Event] = {}
         self.error_callback = error_callback  # Callback for error reporting
         self.gui_root = gui_root  # Tkinter root for thread-safe scheduling
+        self.status_callback = status_callback
         self.load_history()
 
     def load_settings(self) -> Dict[str, Any]:
@@ -287,22 +296,32 @@ class DownloadManager:
                     info = ydl.extract_info(download['url'], download=True)
                     download['title'] = info.get('title', 'Unknown')
                 except DownloadError as e:
-                    # yt-dlp specific download error
                     error_msg = str(e)
-                    if "Unsupported URL" in error_msg:
-                        raise Exception(f"Unsupported URL: {download['url']}. This site may not be supported by yt-dlp. Check supported sites at: https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md")
+                    # If Douyin URL fails with yt-dlp, try browser extraction
+                    if is_douyin_url(download['url']) and (
+                        'Fresh cookies' in error_msg or
+                        'cookies' in error_msg.lower() or
+                        'Sign in' in error_msg
+                    ):
+                        logger.info("yt-dlp failed for Douyin, falling back to browser extraction")
+                        if self.status_callback:
+                            self.status_callback('Extracting via browser (Douyin)...')
+                        self._download_via_browser(download_id)
+                    elif "Unsupported URL" in error_msg:
+                        raise Exception(f"Unsupported URL: {download['url']}. This site may not be supported by yt-dlp.")
                     elif "Unable to download webpage" in error_msg:
-                        raise Exception(f"Network error: Unable to access {download['url']}. Please check your internet connection.")
+                        raise Exception(f"Network error: Unable to access {download['url']}. Check your internet connection.")
                     elif "Video unavailable" in error_msg:
-                        raise Exception(f"Video unavailable: The video at {download['url']} may be deleted, private, or blocked in your region.")
+                        raise Exception(f"Video unavailable: The video may be deleted, private, or region-blocked.")
                     elif "Sign in" in error_msg or "login" in error_msg.lower():
-                        raise Exception(f"Authentication required: This video requires login. You may need to use cookies from your browser.")
+                        raise Exception(f"Authentication required: This video requires login. Use cookies from your browser.")
                     elif "ffmpeg" in error_msg.lower():
-                        raise Exception(f"FFmpeg not found: FFmpeg is required for video processing. Please install FFmpeg and add it to PATH.")
+                        raise Exception(f"FFmpeg not found: FFmpeg is required. Please install FFmpeg.")
                     else:
-                        raise Exception(f"Download error: {error_msg}\n\nTry updating yt-dlp: pip install yt-dlp --upgrade")
+                        raise Exception(f"Download error: {error_msg}\n\nTry: pip install yt-dlp --upgrade")
                 except Exception as e:
-                    # Unknown error
+                    if isinstance(e, DownloadError):
+                        raise
                     raise Exception(f"Unexpected error: {str(e)}\n\nTry:\n1. Updating yt-dlp: pip install yt-dlp --upgrade\n2. Checking the video URL\n3. Verifying your internet connection")
 
             download['status'] = 'completed'
@@ -407,6 +426,59 @@ class DownloadManager:
 
         return options
 
+    def _download_via_browser(self, download_id: str):
+        """Download a Douyin video using browser extraction (fallback)."""
+        download = self.downloads.get(download_id)
+        if download is None:
+            return
+
+        cookie_browser = self.settings.get('cookie_browser', '')
+        extractor = DouyinBrowserExtractor(cookie_browser=cookie_browser)
+
+        # Extract video URL via headless browser
+        result = extractor.extract_video_url(download['url'])
+        video_url = result['video_url']
+        download['title'] = result.get('title', 'Douyin Video')
+
+        # Download the video directly
+        import urllib.request
+        save_dir = Path(self.settings['download_dir'])
+        safe_title = re.sub(r'[<>:"/\\|?*]', '_', download['title'])[:80]
+        file_path = save_dir / f"{safe_title}.mp4"
+
+        req = urllib.request.Request(
+            video_url,
+            headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'https://www.douyin.com/',
+            }
+        )
+
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            total = int(resp.headers.get('Content-Length', 0))
+            download['file_size'] = total
+            start_time = time.time()
+
+            with open(file_path, 'wb') as f:
+                downloaded = 0
+                while True:
+                    chunk = resp.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total > 0:
+                        download['progress'] = downloaded / total * 100
+                    elapsed = time.time() - start_time
+                    if elapsed > 0:
+                        speed = downloaded / elapsed
+                        if speed > 1024 * 1024:
+                            download['speed'] = f'{speed / 1024 / 1024:.1f}MB/s'
+                        else:
+                            download['speed'] = f'{speed / 1024:.0f}KB/s'
+
+        download['file_path'] = str(file_path)
+
     def cancel_download(self, download_id: str):
         """Cancel a queued or active download."""
         if download_id not in self.downloads:
@@ -450,7 +522,11 @@ class YTDLPGUI(ttk.Frame):
     def __init__(self, master=None):
         super().__init__(master)
         self.master = master
-        self.download_manager = DownloadManager(error_callback=self.on_download_error, gui_root=master)
+        self.download_manager = DownloadManager(
+            error_callback=self.on_download_error,
+            gui_root=master,
+            status_callback=lambda msg: self.status_var.set(msg)
+        )
         self.current_theme = tk.StringVar(value=self.download_manager.settings.get('theme', 'dark'))
         self.ffmpeg_available = False
 
@@ -688,14 +764,6 @@ Without FFmpeg, many downloads will fail!
         self.show_advanced = tk.BooleanVar(value=False)
         self.advanced_frame = ttk.Frame(self, style='TFrame')
 
-        ttk.Checkbutton(
-            self,
-            text='Advanced Options ▼',
-            variable=self.show_advanced,
-            command=self.toggle_advanced,
-            style='TCheckbutton'
-        ).grid(row=row + 2, column=1, sticky='w', pady=(5, 0))
-
     def setup_button_section(self, row):
         """Setup action buttons"""
         btn_frame = ttk.Frame(self, style='TFrame')
@@ -736,6 +804,15 @@ Without FFmpeg, many downloads will fail!
             style='TButton'
         )
         open_btn.pack(side='left')
+
+        # Advanced options toggle button
+        self.advanced_btn = ttk.Button(
+            btn_frame,
+            text='⚙ Advanced',
+            command=self.toggle_advanced,
+            style='TButton'
+        )
+        self.advanced_btn.pack(side='left', padx=(10, 0))
 
         ttk.Button(
             btn_frame,
@@ -1151,14 +1228,17 @@ Full log available in: dlcart.log
 
     def toggle_advanced(self):
         """Show/hide advanced options"""
+        self.show_advanced.set(not self.show_advanced.get())
         if not hasattr(self, 'advanced_frame'):
             self.advanced_frame = ttk.Frame(self, style='TFrame')
 
         if self.show_advanced.get():
             self.advanced_frame.grid(row=8, column=0, columnspan=6, sticky='ew', pady=10)
             self.setup_advanced_options()
+            self.advanced_btn.config(text='⚙ Advanced ▲')
         else:
             self.advanced_frame.grid_forget()
+            self.advanced_btn.config(text='⚙ Advanced')
 
     def setup_advanced_options(self):
         """Setup advanced download options"""
