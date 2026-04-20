@@ -13,15 +13,47 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Regex to match Douyin video URLs
+# Regex to match Douyin video URLs (standard format)
 DOUYIN_URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:douyin\.com/video/(\d+)|v\.douyin\.com/[\w-]+)'
 )
 
+# Match any URL on douyin.com that might contain a video
+DOUYIN_DOMAIN_PATTERN = re.compile(
+    r'https?://(?:www\.)?douyin\.com/'
+)
+
+# Extract video ID from various Douyin URL formats
+MODAL_ID_PATTERN = re.compile(r'modal_id=(\d+)')
+VIDEO_PATH_PATTERN = re.compile(r'douyin\.com/video/(\d+)')
+
 
 def is_douyin_url(url: str) -> bool:
     """Check if a URL is a Douyin video link."""
-    return bool(DOUYIN_URL_PATTERN.match(url))
+    return bool(DOUYIN_URL_PATTERN.match(url)) or bool(DOUYIN_DOMAIN_PATTERN.match(url))
+
+
+def normalize_douyin_url(url: str) -> str:
+    """Convert various Douyin URL formats to the standard video URL.
+
+    Handles:
+      - douyin.com/video/123 -> douyin.com/video/123
+      - douyin.com/search/xxx?modal_id=123 -> douyin.com/video/123
+      - douyin.com/xxx?modal_id=123 -> douyin.com/video/123
+      - v.douyin.com/abc -> v.douyin.com/abc (browser resolves)
+    """
+    # Try standard /video/ID format first
+    m = VIDEO_PATH_PATTERN.search(url)
+    if m:
+        return f'https://www.douyin.com/video/{m.group(1)}'
+
+    # Try modal_id parameter (search pages, note pages, etc.)
+    m = MODAL_ID_PATTERN.search(url)
+    if m:
+        return f'https://www.douyin.com/video/{m.group(1)}'
+
+    # Return as-is for short URLs (v.douyin.com)
+    return url
 
 
 class DouyinExtractionError(Exception):
@@ -67,8 +99,9 @@ class DouyinBrowserExtractor:
                 "  playwright install chromium"
             )
 
-        # Resolve short URLs first (v.douyin.com -> www.douyin.com/video/xxx)
-        resolved_url = self._resolve_url(url)
+        # Normalize the URL to standard video format
+        resolved_url = normalize_douyin_url(url)
+        logger.info(f"Normalized URL: {url} -> {resolved_url}")
 
         video_urls = []
         page_title = ''
@@ -159,14 +192,6 @@ class DouyinBrowserExtractor:
             'video_url': best_url,
             'title': page_title or 'Douyin Video',
         }
-
-    def _resolve_url(self, url: str) -> str:
-        """Resolve v.douyin.com short URLs to full video URLs.
-
-        For short URLs, we let the browser handle the redirect automatically
-        by navigating to the short URL directly.
-        """
-        return url
 
     def _load_cookies(self, context, browser_name: str):
         """Load cookies from the user's browser into the Playwright context.

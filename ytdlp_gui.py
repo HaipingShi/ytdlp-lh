@@ -26,7 +26,7 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
 try:
-    from douyin_extractor import is_douyin_url, DouyinBrowserExtractor, DouyinExtractionError
+    from douyin_extractor import is_douyin_url, normalize_douyin_url, DouyinBrowserExtractor, DouyinExtractionError
 except ImportError:
     # Playwright not installed - Douyin browser extraction unavailable
     is_douyin_url = lambda url: False
@@ -431,8 +431,11 @@ class DownloadManager:
         cookie_browser = self.settings.get('cookie_browser', '')
         extractor = DouyinBrowserExtractor(cookie_browser=cookie_browser)
 
+        # Normalize URL (handle search/modal_id formats)
+        video_url = normalize_douyin_url(download['url'])
+
         # Extract video URL via headless browser
-        result = extractor.extract_video_url(download['url'])
+        result = extractor.extract_video_url(video_url)
         video_url = result['video_url']
         download['title'] = result.get('title', 'Douyin Video')
 
