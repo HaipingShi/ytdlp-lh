@@ -26,10 +26,19 @@ from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, ExtractorError
 
 try:
-    from douyin_extractor import is_douyin_url, normalize_douyin_url, DouyinBrowserExtractor, DouyinExtractionError
+    from douyin_extractor import (
+        is_browser_extraction_url, normalize_url, get_site_id,
+        BrowserExtractor, BrowserExtractionError, SITES,
+        # backward-compat aliases
+        is_douyin_url, normalize_douyin_url, DouyinBrowserExtractor, DouyinExtractionError,
+    )
 except ImportError:
-    # Playwright not installed - Douyin browser extraction unavailable
+    # Playwright not installed - browser extraction unavailable
+    is_browser_extraction_url = lambda url: False
     is_douyin_url = lambda url: False
+    get_site_id = lambda url: None
+    SITES = {}
+    BrowserExtractionError = Exception
     DouyinExtractionError = Exception
 
 # When running as a PyInstaller --onefile exe, bundled files are extracted
@@ -291,11 +300,13 @@ class DownloadManager:
             options['postprocessor_hooks'] = [extract_info_hook]
 
             # Download
-            # Douyin: skip yt-dlp entirely, use browser extraction directly
-            if is_douyin_url(download['url']):
-                logger.info("Douyin URL detected, using browser extraction directly")
+            # Browser extraction: skip yt-dlp for sites with known broken extractors
+            if is_browser_extraction_url(download['url']):
+                site_id = get_site_id(download['url']) or 'unknown'
+                site_name = SITES.get(site_id, {}).get('name', site_id) if SITES else site_id
+                logger.info(f"{site_name} URL detected, using browser extraction directly")
                 if self.status_callback:
-                    self.status_callback('Extracting via browser (Douyin)...')
+                    self.status_callback(f'Extracting via browser ({site_name})...')
                 self._download_via_browser(download_id)
             else:
              with YoutubeDL(options) as ydl:
@@ -304,11 +315,13 @@ class DownloadManager:
                     download['title'] = info.get('title', 'Unknown')
                 except DownloadError as e:
                     error_msg = str(e)
-                    # If Douyin URL fails with yt-dlp, try browser extraction
-                    if is_douyin_url(download['url']):
-                        logger.info("yt-dlp failed for Douyin, falling back to browser extraction")
+                    # If browser-extraction URL fails with yt-dlp, try browser extraction
+                    if is_browser_extraction_url(download['url']):
+                        site_id = get_site_id(download['url']) or 'unknown'
+                        site_name = SITES.get(site_id, {}).get('name', site_id) if SITES else site_id
+                        logger.info(f"yt-dlp failed for {site_name}, falling back to browser extraction")
                         if self.status_callback:
-                            self.status_callback('Extracting via browser (Douyin)...')
+                            self.status_callback(f'Extracting via browser ({site_name})...')
                         self._download_via_browser(download_id)
                     elif "Unsupported URL" in error_msg:
                         raise Exception(f"Unsupported URL: {download['url']}. This site may not be supported by yt-dlp.")
@@ -430,21 +443,27 @@ class DownloadManager:
         return options
 
     def _download_via_browser(self, download_id: str):
-        """Download a Douyin video using browser extraction (fallback)."""
+        """Download a video using browser extraction (supports multiple platforms)."""
         download = self.downloads.get(download_id)
         if download is None:
             return
 
         cookie_browser = self.settings.get('cookie_browser', '')
-        extractor = DouyinBrowserExtractor(cookie_browser=cookie_browser)
+        extractor = BrowserExtractor(cookie_browser=cookie_browser)
 
-        # Normalize URL (handle search/modal_id formats)
-        video_url = normalize_douyin_url(download['url'])
+        # Normalize URL using site-specific normalizer
+        video_url = normalize_url(download['url'])
+
+        # Get site info for referer header
+        site_id = get_site_id(download['url']) or 'unknown'
+        site_config = SITES.get(site_id, {}) if SITES else {}
+        referer = site_config.get('referer', '')
+        site_name = site_config.get('name', 'Browser')
 
         # Extract video URL via headless browser
         result = extractor.extract_video_url(video_url)
         video_url = result['video_url']
-        download['title'] = result.get('title', 'Douyin Video')
+        download['title'] = result.get('title', f'{site_name} Video')
 
         # Download the video directly
         import urllib.request
@@ -457,13 +476,13 @@ class DownloadManager:
             file_path = save_dir / f"{safe_title} ({counter}).mp4"
             counter += 1
 
-        req = urllib.request.Request(
-            video_url,
-            headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://www.douyin.com/',
-            }
-        )
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        }
+        if referer:
+            headers['Referer'] = referer
+
+        req = urllib.request.Request(video_url, headers=headers)
 
         with urllib.request.urlopen(req, timeout=60) as resp:
             total = int(resp.headers.get('Content-Length', 0))
