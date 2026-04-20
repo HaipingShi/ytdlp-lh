@@ -147,6 +147,59 @@ pyinstaller --onefile --windowed --collect-all yt_dlp ^
 4. **Click Download**
 5. Done — click **"Open File"** in the right-click menu to play it
 
+## Simple Usage Guide
+
+If this is your first time using DL Cart, follow this flow:
+
+1. Open `DLCart.exe`
+2. Copy a video page link from your browser
+3. Paste the link into the **Video URL** box
+4. Leave **Best Quality** selected unless you want a smaller file
+5. Click **Download**
+6. Wait for the row to change to `COMPLETED`
+7. Right-click the finished row and choose **Open File** or **Open Folder**
+
+Tips:
+
+- If a site needs login, open **Advanced** or **Settings** and choose a browser in **Cookie Browser**
+- If your network requires a proxy, enter it in **Proxy URL**
+- If a download fails, right-click the row and choose **Retry**
+- If you only want audio, select **Audio Only** before downloading
+
+### Beginner-Friendly Walkthrough
+
+Here is the easiest way to use the app without touching advanced settings:
+
+1. Open the video in your browser and copy the full page URL
+2. Return to DL Cart and paste the URL into the top input box
+3. Keep the quality on **Best Quality**
+4. Click **Download**
+5. Watch the task appear in the list below
+
+What you will see:
+
+- `QUEUED` means the task is waiting for a free slot
+- `DOWNLOADING` means the file is actively downloading
+- `PROCESSING` means yt-dlp / FFmpeg is finishing the file
+- `COMPLETED` means the file is ready to open
+- `FAILED` means something went wrong and you can use **Retry**
+
+When you need Advanced or Settings:
+
+- Use **Audio Only** if you want music, podcasts, or spoken content only
+- Use **Proxy URL** only if your network really requires a proxy
+- Use **Cookie Browser** only for sites that require login or age/account verification
+- Leave advanced settings empty for normal public videos
+
+Three common examples:
+
+1. Download a normal public video:
+   Paste the link, keep **Best Quality**, click **Download**
+2. Download only audio:
+   Paste the link, choose **Audio Only**, click **Download**
+3. Download a members-only / login-required video:
+   Paste the link, open **Advanced**, choose your browser in **Cookie Browser**, then download
+
 ### Keyboard & Mouse Shortcuts
 
 | Action | How |
