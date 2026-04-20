@@ -82,6 +82,8 @@ yt-dlp 能做的，它都能做，而且操作更方便：
 - **Windows 通知** — 下载完成时弹出系统通知
 - **暗色 / 亮色主题** — 在设置中切换，默认暗色
 - **代理支持** — 可配置 HTTP/SOCKS 代理，突破网络限制
+- **更安全的代理处理** — 除非你在应用内显式设置代理，否则会忽略损坏的 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量
+- **Cookie 自动降级** — 浏览器 Cookie 读取失败时，会在可行情况下自动重试无 Cookie 下载
 
 ---
 
@@ -120,17 +122,18 @@ EXE 已包含 yt-dlp + FFmpeg，开箱即用。
 ```bash
 git clone https://github.com/HaipingShi/ytdlp-lh.git
 cd ytdlp-lh
-pip install yt-dlp
+pip install -r requirements.txt
 python ytdlp_gui.py
 ```
 
-> 从源码运行需单独安装 FFmpeg。Windows 下将 `ffmpeg.exe` 放在 `ytdlp_gui.py` 同目录即可。
+> 从源码运行需单独安装 FFmpeg。Windows 下将 `ffmpeg.exe` 放在 `ytdlp_gui.py` 同目录即可。如果你希望在受支持站点上启用浏览器抓取兜底，还需要执行 `python -m playwright install chromium`。
 
 <a name="从源码构建"></a>
 ### 从源码构建
 
 ```bash
-pip install pyinstaller
+pip install pyinstaller yt-dlp playwright
+python -m playwright install chromium
 
 # Windows（需要当前目录有 ffmpeg.exe 和 ffprobe.exe）
 pyinstaller --onefile --windowed --collect-all yt_dlp ^
@@ -170,6 +173,8 @@ pyinstaller --onefile --windowed --collect-all yt_dlp ^
 | 下载目录 | 文件保存位置 | `~/Downloads` |
 | 最大并发 | 同时下载数（1–10） | 3 |
 | 速度限制 | KB/s 上限，0 = 不限速 | 0 |
+| Proxy URL | 显式 HTTP/SOCKS 代理，留空表示禁用 | 空 |
+| Cookie Browser | 需要时从 Chrome / Edge / Firefox 读取 Cookie | 空 |
 | 主题 | 暗色或亮色 | 暗色 |
 
 设置文件位于 `~/.dlcart/settings.json`。
@@ -237,6 +242,23 @@ ytdlp-lh/
 </details>
 
 <details>
+<summary><strong>因为代理错误导致下载失败</strong></summary>
+
+- 如果你没有在应用内显式配置代理，DL Cart 会忽略 shell 环境中的 `HTTP_PROXY` / `HTTPS_PROXY`
+- 如果你确实需要代理，请在 **Advanced** 或 **Settings** 中填写，而不是只依赖环境变量
+- 如果下载仍失败，先清空应用内代理字段再重试
+</details>
+
+<details>
+<summary><strong>浏览器 Cookie 读取失败</strong></summary>
+
+- 某些 Windows / 浏览器环境下，浏览器运行时会锁住 Cookie 数据库
+- DL Cart 会在可行情况下自动重试无 Cookie 下载
+- 如果站点确实需要登录，请只在需要时于 **Advanced** 或 **Settings** 中选择正确的浏览器
+- 对公开视频来说，默认将 **Cookie Browser** 留空通常最稳妥
+</details>
+
+<details>
 <summary><strong>应用无法启动</strong></summary>
 
 **EXE 版本：**
@@ -248,7 +270,7 @@ ytdlp-lh/
 **Python 版本：**
 
 - 确认 Python 3.8+：`python --version`
-- 安装依赖：`pip install yt-dlp`
+- 安装依赖：`pip install -r requirements.txt`
 - 查看 `dlcart.log` 获取错误详情
 </details>
 

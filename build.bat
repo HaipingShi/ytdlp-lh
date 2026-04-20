@@ -13,7 +13,7 @@ if errorlevel 1 (
 )
 
 echo [1/3] Installing dependencies...
-python -m pip install pyinstaller yt-dlp
+python -m pip install pyinstaller yt-dlp playwright
 if errorlevel 1 ( echo ERROR: pip failed. && pause && exit /b 1 )
 
 echo Installing Playwright browser...

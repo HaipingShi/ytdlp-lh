@@ -79,6 +79,7 @@ DEFAULT_SETTINGS = {
     'default_quality': 'best',
     'theme': 'dark',
     'speed_limit_kb': 0,  # 0 = unlimited
+    'proxy_url': '',
     'cookie_browser': ''  # e.g. 'chrome', 'edge', 'firefox'; empty = none
 }
 
@@ -148,13 +149,26 @@ class DownloadManager:
         self.status_callback = status_callback
         self.load_history()
 
+    def _update_status(self, message: str):
+        """Update GUI status safely from any thread."""
+        if not self.status_callback:
+            return
+        if self.gui_root:
+            self.gui_root.after(0, lambda: self.status_callback(message))
+        else:
+            self.status_callback(message)
+
     def load_settings(self) -> Dict[str, Any]:
         """Load settings from JSON file"""
         settings_path = Path.home() / '.dlcart' / 'settings.json'
         if settings_path.exists():
             try:
                 with open(settings_path) as f:
-                    return json.load(f)
+                    loaded = json.load(f)
+                    merged = DEFAULT_SETTINGS.copy()
+                    if isinstance(loaded, dict):
+                        merged.update(loaded)
+                    return merged
             except Exception as e:
                 logger.error(f"Failed to load settings: {e}")
         return DEFAULT_SETTINGS.copy()
@@ -255,6 +269,10 @@ class DownloadManager:
         download = self.downloads.get(download_id)
         if download is None:
             return
+        with self.lock:
+            if download_id in self.queue:
+                self.queue.remove(download_id)
+            self.active_downloads.add(download_id)
         cancel_flag = threading.Event()
         self._cancel_flags[download_id] = cancel_flag
 
@@ -287,19 +305,9 @@ class DownloadManager:
                 elif d['status'] == 'finished':
                     download['progress'] = 100
                     download['file_path'] = d['filename']
-                    logger.info(f"Download finished: {download['title']}")
+                    download['status'] = 'processing'
 
             options['progress_hooks'] = [progress_hook]
-
-            def extract_info_hook(d):
-                try:
-                    download['title'] = d.get('title', 'Unknown')
-                    logger.info(f"Extracted info: {download['title']}")
-                except Exception as e:
-                    logger.warning(f"Failed to extract info: {e}")
-                    download['title'] = 'Unknown'
-
-            options['postprocessor_hooks'] = [extract_info_hook]
 
             # Download
             # Only skip yt-dlp entirely for sites where it's fundamentally broken
@@ -309,24 +317,47 @@ class DownloadManager:
                 site_id = get_site_id(download['url']) or 'unknown'
                 site_name = SITES.get(site_id, {}).get('name', site_id) if SITES else site_id
                 logger.info(f"{site_name} URL detected, using browser extraction directly")
-                if self.status_callback:
-                    self.status_callback(f'Extracting via browser ({site_name})...')
+                self._update_status(f'Extracting via browser ({site_name})...')
                 self._download_via_browser(download_id)
             else:
-             with YoutubeDL(options) as ydl:
                 try:
-                    info = ydl.extract_info(download['url'], download=True)
+                    with YoutubeDL(options) as ydl:
+                        info = ydl.extract_info(download['url'], download=True)
                     download['title'] = info.get('title', 'Unknown')
                 except DownloadError as e:
                     error_msg = str(e)
+                    retry_succeeded = False
+                    cookie_error = (
+                        'Could not copy Chrome cookie database' in error_msg or
+                        'Could not copy Edge cookie database' in error_msg or
+                        'Could not copy Firefox cookie database' in error_msg or
+                        'cookie database' in error_msg.lower()
+                    )
+                    if cookie_error and self.settings.get('cookie_browser'):
+                        failed_browser = self.settings.get('cookie_browser')
+                        logger.warning(f"Cookie loading failed for {failed_browser}, retrying without browser cookies")
+                        self._update_status(f'Cookie access failed for {failed_browser}; retrying without cookies...')
+                        original_cookie_browser = self.settings.get('cookie_browser', '')
+                        try:
+                            self.settings['cookie_browser'] = ''
+                            retry_options = self._get_download_options(download)
+                            retry_options['progress_hooks'] = [progress_hook]
+                            with YoutubeDL(retry_options) as retry_ydl:
+                                info = retry_ydl.extract_info(download['url'], download=True)
+                                download['title'] = info.get('title', 'Unknown')
+                            self._update_status('Download succeeded without browser cookies')
+                            retry_succeeded = True
+                        finally:
+                            self.settings['cookie_browser'] = original_cookie_browser
+                    if retry_succeeded:
+                        pass
                     # If a supported browser-extraction site fails with yt-dlp,
                     # fall back to browser extraction
-                    if is_browser_extraction_url(download['url']):
+                    elif is_browser_extraction_url(download['url']):
                         site_id = get_site_id(download['url']) or 'unknown'
                         site_name = SITES.get(site_id, {}).get('name', site_id) if SITES else site_id
                         logger.info(f"yt-dlp failed for {site_name}, falling back to browser extraction")
-                        if self.status_callback:
-                            self.status_callback(f'Extracting via browser ({site_name})...')
+                        self._update_status(f'Extracting via browser ({site_name})...')
                         self._download_via_browser(download_id)
                     elif "Unsupported URL" in error_msg:
                         raise Exception(f"Unsupported URL: {download['url']}. This site may not be supported by yt-dlp.")
@@ -345,6 +376,7 @@ class DownloadManager:
                         raise
                     raise Exception(f"Unexpected error: {str(e)}\n\nTry:\n1. Updating yt-dlp: pip install yt-dlp --upgrade\n2. Checking the video URL\n3. Verifying your internet connection")
 
+            download['progress'] = 100
             download['status'] = 'completed'
             download['completed_at'] = datetime.now()
             self.save_history()
@@ -408,8 +440,8 @@ class DownloadManager:
                     'add_metadata': True,
                 }
             ],
-            # Enable verbose logging to capture errors
-            'verbose': True,
+            # Keep yt-dlp output concise; the app surfaces user-facing errors itself.
+            'verbose': False,
             # Handle errors with more details
             'ignoreerrors': False,
             # Set user agent to avoid blocking
@@ -431,8 +463,7 @@ class DownloadManager:
 
         # Proxy
         proxy_url = self.settings.get('proxy_url', '')
-        if proxy_url:
-            options['proxy'] = proxy_url
+        options['proxy'] = proxy_url or ''
 
         # Configure subtitle languages
         if subtitles != 'none':
@@ -452,6 +483,12 @@ class DownloadManager:
         download = self.downloads.get(download_id)
         if download is None:
             return
+        cancel_flag = self._cancel_flags.get(download_id)
+        file_path = None
+
+        def ensure_not_cancelled():
+            if cancel_flag and cancel_flag.is_set():
+                raise Exception("Download cancelled by user")
 
         cookie_browser = self.settings.get('cookie_browser', '')
         extractor = BrowserExtractor(cookie_browser=cookie_browser)
@@ -465,54 +502,67 @@ class DownloadManager:
         referer = site_config.get('referer', '')
         site_name = site_config.get('name', 'Browser')
 
-        # Extract video URL via headless browser
-        result = extractor.extract_video_url(video_url)
-        video_url = result['video_url']
-        download['title'] = result.get('title', f'{site_name} Video')
+        try:
+            ensure_not_cancelled()
 
-        # Download the video directly
-        import urllib.request
-        save_dir = Path(self.settings['download_dir'])
-        safe_title = re.sub(r'[<>:"/\\|?*]', '_', download['title'])[:80]
-        file_path = save_dir / f"{safe_title}.mp4"
-        # Avoid overwriting existing files by appending a counter
-        counter = 1
-        while file_path.exists():
-            file_path = save_dir / f"{safe_title} ({counter}).mp4"
-            counter += 1
+            # Extract video URL via headless browser
+            result = extractor.extract_video_url(video_url)
+            ensure_not_cancelled()
 
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        }
-        if referer:
-            headers['Referer'] = referer
+            video_url = result['video_url']
+            download['title'] = result.get('title', f'{site_name} Video')
 
-        req = urllib.request.Request(video_url, headers=headers)
+            # Download the video directly
+            import urllib.request
+            save_dir = Path(self.settings['download_dir'])
+            safe_title = re.sub(r'[<>:"/\\|?*]', '_', download['title'])[:80]
+            file_path = save_dir / f"{safe_title}.mp4"
+            # Avoid overwriting existing files by appending a counter
+            counter = 1
+            while file_path.exists():
+                file_path = save_dir / f"{safe_title} ({counter}).mp4"
+                counter += 1
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            total = int(resp.headers.get('Content-Length', 0))
-            download['file_size'] = total
-            start_time = time.time()
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            }
+            if referer:
+                headers['Referer'] = referer
 
-            with open(file_path, 'wb') as f:
-                downloaded = 0
-                while True:
-                    chunk = resp.read(8192)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total > 0:
-                        download['progress'] = downloaded / total * 100
-                    elapsed = time.time() - start_time
-                    if elapsed > 0:
-                        speed = downloaded / elapsed
-                        if speed > 1024 * 1024:
-                            download['speed'] = f'{speed / 1024 / 1024:.1f}MB/s'
-                        else:
-                            download['speed'] = f'{speed / 1024:.0f}KB/s'
+            req = urllib.request.Request(video_url, headers=headers)
 
-        download['file_path'] = str(file_path)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                total = int(resp.headers.get('Content-Length', 0))
+                download['file_size'] = total
+                start_time = time.time()
+
+                with open(file_path, 'wb') as f:
+                    downloaded = 0
+                    while True:
+                        ensure_not_cancelled()
+                        chunk = resp.read(8192)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            download['progress'] = downloaded / total * 100
+                        elapsed = time.time() - start_time
+                        if elapsed > 0:
+                            speed = downloaded / elapsed
+                            if speed > 1024 * 1024:
+                                download['speed'] = f'{speed / 1024 / 1024:.1f}MB/s'
+                            else:
+                                download['speed'] = f'{speed / 1024:.0f}KB/s'
+
+            download['file_path'] = str(file_path)
+        except Exception:
+            if file_path and file_path.exists():
+                try:
+                    file_path.unlink()
+                except OSError:
+                    logger.warning(f"Failed to remove partial file: {file_path}")
+            raise
 
     def cancel_download(self, download_id: str):
         """Cancel a queued or active download."""
@@ -581,6 +631,9 @@ class YTDLPGUI(ttk.Frame):
 
         # Track downloads
         self.update_ui()
+
+        # Surface environment pitfalls that commonly break downloads.
+        self.show_startup_warnings()
 
     def apply_theme(self):
         """Apply dark or light theme"""
@@ -697,6 +750,17 @@ Without FFmpeg, many downloads will fail!
 
         ttk.Button(btn_frame, text='Continue Anyway', command=dialog.destroy,
                    style='TButton').pack(side='left', padx=5)
+
+    def show_startup_warnings(self):
+        """Show a lightweight status hint for problematic environment settings."""
+        if self.download_manager.settings.get('proxy_url'):
+            return
+
+        env_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('HTTP_PROXY')
+        if env_proxy:
+            self.status_var.set(
+                f'Environment proxy detected ({env_proxy}). App downloads ignore it unless set in Advanced/Settings.'
+            )
 
     def setup_url_section(self, row):
         """Setup URL input section"""
@@ -1487,6 +1551,30 @@ Full log available in: dlcart.log
                                    values=['light', 'dark'], state='readonly')
         theme_combo.pack(side='left', padx=10)
 
+        # Proxy
+        proxy_frame = ttk.Frame(dialog, style='TFrame')
+        proxy_frame.pack(fill='x', padx=20, pady=10)
+
+        ttk.Label(proxy_frame, text='Proxy URL:',
+                 background=self.bg_color, foreground=self.fg_color).pack(side='left')
+
+        proxy_var = tk.StringVar(value=self.download_manager.settings.get('proxy_url', ''))
+        ttk.Entry(proxy_frame, textvariable=proxy_var, width=32).pack(side='left', padx=10)
+
+        # Cookie browser
+        cookie_frame = ttk.Frame(dialog, style='TFrame')
+        cookie_frame.pack(fill='x', padx=20, pady=10)
+
+        ttk.Label(cookie_frame, text='Cookie Browser:',
+                 background=self.bg_color, foreground=self.fg_color).pack(side='left')
+
+        cookie_var = tk.StringVar(value=self.download_manager.settings.get('cookie_browser', ''))
+        ttk.Combobox(cookie_frame, textvariable=cookie_var,
+                     values=['', 'chrome', 'edge', 'firefox'],
+                     state='readonly', width=12).pack(side='left', padx=10)
+        ttk.Label(cookie_frame, text='Leave blank if not needed',
+                 background=self.bg_color, foreground=self.fg_color).pack(side='left')
+
         # Buttons
         btn_frame = ttk.Frame(dialog, style='TFrame')
         btn_frame.pack(pady=20)
@@ -1496,6 +1584,8 @@ Full log available in: dlcart.log
             self.download_manager.settings['max_concurrent'] = concurrent_var.get()
             self.download_manager.settings['theme'] = self.current_theme.get()
             self.download_manager.settings['speed_limit_kb'] = speed_var.get()
+            self.download_manager.settings['proxy_url'] = proxy_var.get().strip()
+            self.download_manager.settings['cookie_browser'] = cookie_var.get().strip()
             self.download_manager.save_settings()
             self.apply_theme()
             dialog.destroy()

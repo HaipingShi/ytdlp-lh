@@ -80,6 +80,8 @@ Everything yt-dlp can do, accessible through a clean GUI:
 - **Windows notifications** — Toast notification pops up when a download finishes
 - **Dark / Light theme** — Switch in settings, dark mode by default
 - **Proxy support** — Configure HTTP/SOCKS proxy for restricted networks
+- **Safer proxy handling** — Ignores broken `HTTP_PROXY` / `HTTPS_PROXY` environment settings unless you explicitly configure a proxy in the app
+- **Cookie fallback** — If browser cookie access fails, the app automatically retries without browser cookies when possible
 
 ---
 
@@ -117,16 +119,17 @@ Requirements: Python 3.8+, Windows / macOS / Linux.
 ```bash
 git clone https://github.com/HaipingShi/ytdlp-lh.git
 cd ytdlp-lh
-pip install yt-dlp
+pip install -r requirements.txt
 python ytdlp_gui.py
 ```
 
-> FFmpeg should be installed separately if running from source. On Windows, place `ffmpeg.exe` next to `ytdlp_gui.py`.
+> FFmpeg should be installed separately if running from source. On Windows, place `ffmpeg.exe` next to `ytdlp_gui.py`. If you want browser-based extraction fallback for supported sites, also run `python -m playwright install chromium`.
 
 ### Building from Source
 
 ```bash
-pip install pyinstaller
+pip install pyinstaller yt-dlp playwright
+python -m playwright install chromium
 
 # Windows (bundles ffmpeg.exe if present in current dir)
 pyinstaller --onefile --windowed --collect-all yt_dlp ^
@@ -166,6 +169,8 @@ Open via the ⚙️ button. All settings persist across sessions.
 | Download Directory | Where files are saved | `~/Downloads` |
 | Max Concurrent | Parallel download slots (1–10) | 3 |
 | Speed Limit | KB/s cap, 0 = unlimited | 0 |
+| Proxy URL | Explicit HTTP/SOCKS proxy, blank = disabled | empty |
+| Cookie Browser | Load cookies from Chrome / Edge / Firefox when needed | empty |
 | Theme | Dark or Light | Dark |
 
 Settings are stored at `~/.dlcart/settings.json`.
@@ -193,7 +198,7 @@ Full list: [yt-dlp supported sites](https://github.com/yt-dlp/yt-dlp/blob/master
 ```
 ytdlp-lh/
 ├── ytdlp_gui.py          # Entire application in a single file
-├── requirements.txt      # Python dependencies
+├── requirements.txt      # Runtime/build dependencies
 ├── .github/workflows/
 │   └── build.yml         # CI: build EXE + publish to GitHub Releases
 ├── docs/                 # Documentation & plans
@@ -233,6 +238,23 @@ This means video and audio streams were not merged. Make sure FFmpeg is availabl
 </details>
 
 <details>
+<summary><strong>Downloads fail because of a proxy error</strong></summary>
+
+- If you did not explicitly configure a proxy in the app, DL Cart ignores `HTTP_PROXY` / `HTTPS_PROXY` from the shell environment
+- If you do need a proxy, set it in **Advanced** or **Settings** instead of relying on environment variables
+- If downloads still fail, clear the in-app proxy field and try again
+</details>
+
+<details>
+<summary><strong>Browser cookie loading fails</strong></summary>
+
+- Some Windows/browser setups block access to the browser cookie database while the browser is running
+- DL Cart automatically retries without browser cookies when possible
+- If the site truly requires login, open **Advanced** or **Settings** and choose the correct browser only when needed
+- Leaving **Cookie Browser** blank is the safest default for public videos
+</details>
+
+<details>
 <summary><strong>App won't start</strong></summary>
 
 **EXE version:**
@@ -244,7 +266,7 @@ This means video and audio streams were not merged. Make sure FFmpeg is availabl
 **Python version:**
 
 - Ensure Python 3.8+: `python --version`
-- Install deps: `pip install yt-dlp`
+- Install deps: `pip install -r requirements.txt`
 - Check `dlcart.log` for error details
 </details>
 

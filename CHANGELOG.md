@@ -1,5 +1,36 @@
 # 独轮车 DL Cart - 更新日志
 
+## Unreleased (2026-04-20)
+
+### 🎉 新增功能
+
+#### 打包与运行环境
+- ✅ **Playwright 依赖补齐** - `build.bat` 和 GitHub Actions 现会显式安装 `playwright`，避免在干净环境里执行 `python -m playwright install chromium` 时失败
+- ✅ **设置项补全** - 设置窗口新增 `Proxy URL` 和 `Cookie Browser`，可以显式配置或清空代理与浏览器 Cookie 来源
+
+#### 文档与说明
+- ✅ **README 对齐真实行为** - 中英文 README 已补充源码运行/构建步骤、代理行为、Cookie 降级逻辑和新增设置项说明
+- ✅ **故障排查增强** - 中英文 README 已增加代理错误和浏览器 Cookie 读取失败的排查说明
+
+### 🐛 Bug修复
+
+1. 修复了 `build.bat` / CI 未安装 `playwright` 就尝试安装 Chromium 的问题
+2. 修复了浏览器兜底下载路径无法取消、且取消后可能残留半成品文件的问题
+3. 修复了后台下载线程直接更新 Tk 状态栏的线程安全隐患
+4. 修复了应用默认受 `HTTP_PROXY` / `HTTPS_PROXY` 环境变量干扰，导致在损坏代理下下载失败的问题
+5. 修复了浏览器 Cookie 数据库不可访问时，普通下载会直接失败的问题；现在会自动无 Cookie 重试
+6. 修复了直接调用 `download_video()` 时任务仍留在队列中，导致同一下载被重复启动的问题
+7. 清理了重复和误导性的下载阶段日志，使完成态与真实行为更一致
+
+### ✅ 实际验证
+
+- 已验证 GUI 可正常启动和关闭
+- 已验证 Playwright Chromium 可 headless 启动
+- 已验证在禁用损坏代理后，`yt-dlp` 可完成真实在线提取
+- 已验证 `DownloadManager` 可真实下载公开 MP4 文件
+- 已验证浏览器 Cookie 读取失败后，会自动降级并成功完成下载
+- 已验证下载结束后状态正确落为 `completed`
+
 ## v2.0 (2026-04-02)
 
 ### 🎉 新增功能
