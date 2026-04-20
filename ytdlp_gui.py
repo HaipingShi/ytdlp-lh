@@ -59,7 +59,8 @@ DEFAULT_SETTINGS = {
     'max_concurrent': 3,
     'default_quality': 'best',
     'theme': 'dark',
-    'speed_limit_kb': 0  # 0 = unlimited
+    'speed_limit_kb': 0,  # 0 = unlimited
+    'cookie_browser': ''  # e.g. 'chrome', 'edge', 'firefox'; empty = none
 }
 
 # Quality presets with yt-dlp format strings
@@ -382,6 +383,16 @@ class DownloadManager:
         speed_kb = self.settings.get('speed_limit_kb', 0)
         if speed_kb and speed_kb > 0:
             options['ratelimit'] = speed_kb * 1024  # yt_dlp expects bytes/s
+
+        # Cookie source for authenticated sites (Douyin, Bilibili, etc.)
+        cookie_browser = self.settings.get('cookie_browser', '')
+        if cookie_browser:
+            options['cookiesfrombrowser'] = (cookie_browser,)
+
+        # Proxy
+        proxy_url = self.settings.get('proxy_url', '')
+        if proxy_url:
+            options['proxy'] = proxy_url
 
         # Configure subtitle languages
         if subtitles != 'none':
@@ -1019,6 +1030,13 @@ View Count: {view_count or 'Unknown'}
         subtitle_key = self.subtitle_key_from_value.get(self.subtitle_var.get(), 'none')
         format_id = self.format_var.get() if hasattr(self, 'format_var') and self.format_var.get() else None
 
+        # Sync advanced options from UI to settings before dispatching
+        if hasattr(self, 'proxy_var'):
+            self.download_manager.settings['proxy_url'] = self.proxy_var.get()
+        if hasattr(self, 'cookie_browser_var'):
+            self.download_manager.settings['cookie_browser'] = self.cookie_browser_var.get()
+        self.download_manager.save_settings()
+
         download_id = self.download_manager.add_to_queue(
             url, quality,
             format_id=format_id,
@@ -1156,6 +1174,20 @@ Full log available in: dlcart.log
         self.proxy_var = tk.StringVar(value=self.download_manager.settings.get('proxy_url', ''))
         proxy_entry = ttk.Entry(proxy_frame, textvariable=self.proxy_var, width=40)
         proxy_entry.pack(side='left', padx=10, expand=True)
+
+        # Cookie source for sites that require authentication (e.g. Douyin)
+        cookie_frame = ttk.LabelFrame(self.advanced_frame, text='Cookie Source (for Douyin/Bilibili etc.)', style='TLabelframe')
+        cookie_frame.pack(fill='x', padx=5, pady=5)
+
+        self.cookie_browser_var = tk.StringVar(
+            value=self.download_manager.settings.get('cookie_browser', ''))
+        cookie_combo = ttk.Combobox(
+            cookie_frame,
+            textvariable=self.cookie_browser_var,
+            values=['', 'chrome', 'edge', 'firefox'],
+            state='readonly', width=15)
+        cookie_combo.pack(side='left', padx=10)
+        ttk.Label(cookie_frame, text='Leave empty if not needed', style='TLabel').pack(side='left', padx=5)
 
         # Add format selection
         format_frame = ttk.LabelFrame(self.advanced_frame, text='Format Selection', style='TLabelframe')
