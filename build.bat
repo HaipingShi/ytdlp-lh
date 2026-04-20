@@ -16,6 +16,9 @@ echo [1/3] Installing dependencies...
 python -m pip install pyinstaller yt-dlp
 if errorlevel 1 ( echo ERROR: pip failed. && pause && exit /b 1 )
 
+echo Installing Playwright browser...
+python -m playwright install chromium
+
 echo.
 echo [2/3] Downloading FFmpeg to bundle into exe...
 if exist ffmpeg.exe (

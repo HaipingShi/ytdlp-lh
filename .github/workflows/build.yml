@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install pyinstaller yt-dlp
 
+      - name: Install Playwright browsers
+        run: python -m playwright install chromium
+
       - name: Download FFmpeg
         shell: pwsh
         run: |
