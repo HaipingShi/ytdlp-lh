@@ -92,6 +92,7 @@ SITES: Dict[str, Dict[str, Any]] = {
         'referer': 'https://www.douyin.com/',
         'normalize': _normalize_douyin,
         'title_suffix': ' - 抖音',
+        'skip_ytdlp': True,
     },
     'xiaohongshu': {
         'name': '小红书',
@@ -104,6 +105,7 @@ SITES: Dict[str, Dict[str, Any]] = {
         'referer': 'https://www.xiaohongshu.com/',
         'normalize': _normalize_xiaohongshu,
         'title_suffix': ' - 小红书',
+        'skip_ytdlp': False,
     },
     'kuaishou': {
         'name': '快手',
@@ -118,6 +120,7 @@ SITES: Dict[str, Dict[str, Any]] = {
         'referer': 'https://www.kuaishou.com/',
         'normalize': _normalize_kuaishou,
         'title_suffix': ' - 快手',
+        'skip_ytdlp': False,
     },
     'weibo': {
         'name': '微博',
@@ -144,6 +147,7 @@ SITES: Dict[str, Dict[str, Any]] = {
         'referer': 'https://www.ixigua.com/',
         'normalize': _normalize_xigua,
         'title_suffix': ' - 西瓜视频',
+        'skip_ytdlp': False,
     },
     'pipixia': {
         'name': '皮皮虾',
@@ -156,6 +160,7 @@ SITES: Dict[str, Dict[str, Any]] = {
         'referer': 'https://www.pipix.com/',
         'normalize': _normalize_pipixia,
         'title_suffix': ' - 皮皮虾',
+        'skip_ytdlp': False,
     },
     'zhihu': {
         'name': '知乎',
@@ -170,6 +175,7 @@ SITES: Dict[str, Dict[str, Any]] = {
         'referer': 'https://www.zhihu.com/',
         'normalize': _normalize_zhihu,
         'title_suffix': ' - 知乎',
+        'skip_ytdlp': False,
     },
     'haokan': {
         'name': '好看视频',
@@ -183,6 +189,7 @@ SITES: Dict[str, Dict[str, Any]] = {
         'referer': 'https://haokan.baidu.com/',
         'normalize': _normalize_haokan,
         'title_suffix': ' - 好看视频',
+        'skip_ytdlp': True,
     },
 }
 
@@ -220,6 +227,19 @@ def normalize_url(url: str, site_id: Optional[str] = None) -> str:
     if site_id and site_id in SITES:
         return SITES[site_id]['normalize'](url)
     return url
+
+
+def should_skip_ytdlp(url: str) -> bool:
+    """Return True if yt-dlp should be skipped for this URL.
+
+    Sites with skip_ytdlp=True have yt-dlp extractors that are known to be
+    fundamentally broken (e.g. Douyin's a_bogus signature). For these sites,
+    we go directly to browser extraction instead of wasting time with yt-dlp.
+    """
+    site_id = get_site_id(url)
+    if site_id and site_id in SITES:
+        return SITES[site_id].get('skip_ytdlp', False)
+    return False
 
 
 # Backward-compatible aliases
@@ -297,8 +317,12 @@ class BrowserExtractor:
         logger.info(f"Normalized URL: {url} -> {resolved_url}")
 
         video_urls: List[str] = []
+        dom_video_urls: List[str] = []
         page_title = ''
         page_closed = threading.Event()
+
+        # Video file extensions to match in URLs
+        VIDEO_EXTENSIONS = ('.mp4', '.m3u8', '.flv', '.mov', '.webm', '.ts')
 
         with sync_playwright() as p:
             browser = None
@@ -326,20 +350,33 @@ class BrowserExtractor:
                     resp_url = response.url
                     content_type = response.headers.get('content-type', '')
 
+                    # Skip known non-video types early
+                    non_video_types = ('text/', 'image/', 'application/javascript',
+                                       'application/json', 'font/', 'css')
+                    if any(content_type.startswith(t) for t in non_video_types):
+                        return
+
                     # Check if this looks like a video response
                     is_video_type = 'video/' in content_type
-                    is_cdn_match = any(domain in resp_url for domain in cdn_domains)
+                    is_cdn_match = cdn_domains and any(
+                        domain in resp_url for domain in cdn_domains)
+                    has_video_ext = any(resp_url.split('?')[0].endswith(ext)
+                                       for ext in VIDEO_EXTENSIONS)
 
-                    if is_video_type or is_cdn_match:
-                        # Filter out tiny responses (thumbnails, ads, previews)
+                    if is_video_type:
+                        # Confirmed video by content-type — trust it
                         content_length = response.headers.get('content-length')
                         if content_length and int(content_length) < self.MIN_VIDEO_SIZE:
                             return
-                        # Also filter by URL pattern if configured
-                        cdn_path = site_config.get('cdn_path_hint', '')
-                        if is_video_type or (cdn_path and cdn_path in resp_url):
-                            video_urls.append(resp_url)
-                            logger.info(f"Intercepted video URL: {resp_url[:120]}...")
+                        video_urls.append(resp_url)
+                        logger.info(f"Intercepted video URL: {resp_url[:120]}...")
+                    elif is_cdn_match and (has_video_ext or '/video/' in resp_url):
+                        # CDN domain match + video-like path or extension
+                        content_length = response.headers.get('content-length')
+                        if content_length and int(content_length) < self.MIN_VIDEO_SIZE:
+                            return
+                        video_urls.append(resp_url)
+                        logger.info(f"Intercepted video URL: {resp_url[:120]}...")
 
                 page.on('response', on_response)
 
@@ -349,16 +386,42 @@ class BrowserExtractor:
                           timeout=self.timeout * 1000)
 
                 # Wait for the video element and try to trigger playback
+                video_found = False
                 try:
                     page.wait_for_selector('video', timeout=15000)
                     page_title = page.title()
+                    video_found = True
                     # Scroll to trigger lazy-loaded video
                     page.evaluate('window.scrollTo(0, 500)')
+                    # Try clicking the video to trigger playback
+                    try:
+                        page.click('video', timeout=2000)
+                    except Exception:
+                        pass
                 except Exception:
                     logger.warning("Video element not found within timeout")
+                    page_title = page.title()
 
                 # Give extra time for network interception
                 page.wait_for_timeout(3000)
+
+                # DOM fallback: extract video src from <video> and <source> elements
+                if not video_urls and video_found:
+                    try:
+                        srcs = page.evaluate('''() => {
+                            const urls = [];
+                            document.querySelectorAll('video source, video').forEach(el => {
+                                const src = el.src || el.getAttribute('src');
+                                if (src) urls.push(src);
+                            });
+                            return urls;
+                        }''')
+                        for src in srcs:
+                            if src and src.startswith('http'):
+                                dom_video_urls.append(src)
+                                logger.info(f"DOM video src: {src[:120]}...")
+                    except Exception as e:
+                        logger.warning(f"Failed to extract video src from DOM: {e}")
 
             except Exception as e:
                 raise BrowserExtractionError(
@@ -377,14 +440,32 @@ class BrowserExtractor:
                     except Exception:
                         pass
 
-        if not video_urls:
+        all_urls = video_urls + dom_video_urls
+        if not all_urls:
             raise BrowserExtractionError(
                 f"No video stream URL was intercepted from {site_name}. "
-                f"The video may be private, deleted, or region-blocked."
+                f"The video may be private, deleted, or region-blocked. "
+                f"Try enabling cookies from your browser in Advanced Options."
             )
 
-        # Pick the best URL (prefer larger content-length or last URL)
-        best_url = video_urls[-1]
+        # Pick the best URL:
+        # 1. Prefer URLs from known CDN domains (actual video streams)
+        # 2. Among CDN URLs, prefer the last one (typically the full video)
+        # 3. Fall back to non-CDN URLs, skipping known static asset domains
+        static_domains = ('douyinstatic.com', 'staticcdn', 'fe-static')
+
+        cdn_urls = [u for u in video_urls
+                    if cdn_domains and any(d in u for d in cdn_domains)
+                    and not any(s in u for s in static_domains)]
+        non_static = [u for u in all_urls
+                      if not any(s in u for s in static_domains)]
+
+        if cdn_urls:
+            best_url = cdn_urls[-1]
+        elif non_static:
+            best_url = non_static[-1]
+        else:
+            best_url = all_urls[-1]
 
         # Clean up title
         if title_suffix and title_suffix in page_title:

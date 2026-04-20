@@ -28,6 +28,7 @@ from yt_dlp.utils import DownloadError, ExtractorError
 try:
     from douyin_extractor import (
         is_browser_extraction_url, normalize_url, get_site_id,
+        should_skip_ytdlp,
         BrowserExtractor, BrowserExtractionError, SITES,
         # backward-compat aliases
         is_douyin_url, normalize_douyin_url, DouyinBrowserExtractor, DouyinExtractionError,
@@ -37,6 +38,7 @@ except ImportError:
     is_browser_extraction_url = lambda url: False
     is_douyin_url = lambda url: False
     get_site_id = lambda url: None
+    should_skip_ytdlp = lambda url: False
     SITES = {}
     BrowserExtractionError = Exception
     DouyinExtractionError = Exception
@@ -300,8 +302,10 @@ class DownloadManager:
             options['postprocessor_hooks'] = [extract_info_hook]
 
             # Download
-            # Browser extraction: skip yt-dlp for sites with known broken extractors
-            if is_browser_extraction_url(download['url']):
+            # Only skip yt-dlp entirely for sites where it's fundamentally broken
+            # (e.g. Douyin's a_bogus). For other supported sites, let yt-dlp try
+            # first and fall back to browser extraction if it fails.
+            if should_skip_ytdlp(download['url']):
                 site_id = get_site_id(download['url']) or 'unknown'
                 site_name = SITES.get(site_id, {}).get('name', site_id) if SITES else site_id
                 logger.info(f"{site_name} URL detected, using browser extraction directly")
@@ -315,7 +319,8 @@ class DownloadManager:
                     download['title'] = info.get('title', 'Unknown')
                 except DownloadError as e:
                     error_msg = str(e)
-                    # If browser-extraction URL fails with yt-dlp, try browser extraction
+                    # If a supported browser-extraction site fails with yt-dlp,
+                    # fall back to browser extraction
                     if is_browser_extraction_url(download['url']):
                         site_id = get_site_id(download['url']) or 'unknown'
                         site_name = SITES.get(site_id, {}).get('name', site_id) if SITES else site_id
