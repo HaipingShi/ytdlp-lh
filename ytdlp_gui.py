@@ -180,7 +180,7 @@ class DownloadManager:
             d for d in self.downloads.values()
             if d['status'] in ('completed', 'failed', 'cancelled')
         ]
-        finished.sort(key=lambda d: d.get('completed_at') or d.get('started_at') or datetime.min, reverse=True)
+        finished.sort(key=lambda d: str(d.get('completed_at') or d.get('started_at') or ''), reverse=True)
         finished = finished[:200]
         def serialise(d):
             out = {}
