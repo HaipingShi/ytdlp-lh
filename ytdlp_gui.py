@@ -291,7 +291,14 @@ class DownloadManager:
             options['postprocessor_hooks'] = [extract_info_hook]
 
             # Download
-            with YoutubeDL(options) as ydl:
+            # Douyin: skip yt-dlp entirely, use browser extraction directly
+            if is_douyin_url(download['url']):
+                logger.info("Douyin URL detected, using browser extraction directly")
+                if self.status_callback:
+                    self.status_callback('Extracting via browser (Douyin)...')
+                self._download_via_browser(download_id)
+            else:
+             with YoutubeDL(options) as ydl:
                 try:
                     info = ydl.extract_info(download['url'], download=True)
                     download['title'] = info.get('title', 'Unknown')
