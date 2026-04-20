@@ -298,11 +298,7 @@ class DownloadManager:
                 except DownloadError as e:
                     error_msg = str(e)
                     # If Douyin URL fails with yt-dlp, try browser extraction
-                    if is_douyin_url(download['url']) and (
-                        'Fresh cookies' in error_msg or
-                        'cookies' in error_msg.lower() or
-                        'Sign in' in error_msg
-                    ):
+                    if is_douyin_url(download['url']):
                         logger.info("yt-dlp failed for Douyin, falling back to browser extraction")
                         if self.status_callback:
                             self.status_callback('Extracting via browser (Douyin)...')
@@ -445,6 +441,11 @@ class DownloadManager:
         save_dir = Path(self.settings['download_dir'])
         safe_title = re.sub(r'[<>:"/\\|?*]', '_', download['title'])[:80]
         file_path = save_dir / f"{safe_title}.mp4"
+        # Avoid overwriting existing files by appending a counter
+        counter = 1
+        while file_path.exists():
+            file_path = save_dir / f"{safe_title} ({counter}).mp4"
+            counter += 1
 
         req = urllib.request.Request(
             video_url,

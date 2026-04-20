@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 # Regex to match Douyin video URLs
 DOUYIN_URL_PATTERN = re.compile(
-    r'https?://(?:www\.)?(?:douyin\.com/video/(\d+)|v\.douyin\.com/\w+)'
+    r'https?://(?:www\.)?(?:douyin\.com/video/(\d+)|v\.douyin\.com/[\w-]+)'
 )
 
 
@@ -76,6 +76,7 @@ class DouyinBrowserExtractor:
 
         with sync_playwright() as p:
             browser = None
+            context = None
             try:
                 browser = p.chromium.launch(headless=True)
                 context = browser.new_context(
@@ -123,16 +124,20 @@ class DouyinBrowserExtractor:
                 # Give extra time for network interception
                 page.wait_for_timeout(3000)
 
-                page_closed.set()
-                browser.close()
             except Exception as e:
+                raise DouyinExtractionError(f"Browser extraction failed: {e}")
+            finally:
                 page_closed.set()
+                if context:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
                 if browser:
                     try:
                         browser.close()
                     except Exception:
                         pass
-                raise DouyinExtractionError(f"Browser extraction failed: {e}")
 
         if not video_urls:
             raise DouyinExtractionError(
