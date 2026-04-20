@@ -54,7 +54,6 @@ class DouyinBrowserExtractor:
             Dict with keys:
                 - 'video_url': str, direct video stream URL
                 - 'title': str, video title (may be empty)
-                - 'duration': Optional[int], duration in seconds
 
         Raises:
             DouyinExtractionError: If extraction fails
