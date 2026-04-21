@@ -19,6 +19,7 @@ Supported platforms:
 import logging
 import re
 import threading
+import sys
 from typing import Optional, Dict, Any, List, Callable
 from pathlib import Path
 
@@ -424,6 +425,19 @@ class BrowserExtractor:
                         logger.warning(f"Failed to extract video src from DOM: {e}")
 
             except Exception as e:
+                error_text = str(e)
+                if ('Executable doesn\'t exist' in error_text or
+                        'Executable does not exist' in error_text):
+                    if getattr(sys, '_MEIPASS', None):
+                        raise BrowserExtractionError(
+                            f"Browser extraction failed for {site_name}: this EXE was built "
+                            f"without the bundled Playwright Chromium browser. Please download "
+                            f"a newer release."
+                        )
+                    raise BrowserExtractionError(
+                        f"Browser extraction failed for {site_name}: Playwright Chromium is not installed. "
+                        f"Run `python -m playwright install chromium`."
+                    )
                 raise BrowserExtractionError(
                     f"Browser extraction failed for {site_name}: {e}"
                 )

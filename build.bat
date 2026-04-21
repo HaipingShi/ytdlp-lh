@@ -17,7 +17,9 @@ python -m pip install pyinstaller yt-dlp playwright
 if errorlevel 1 ( echo ERROR: pip failed. && pause && exit /b 1 )
 
 echo Installing Playwright browser...
+set "PLAYWRIGHT_BROWSERS_PATH=0"
 python -m playwright install chromium
+if errorlevel 1 ( echo ERROR: playwright browser install failed. && pause && exit /b 1 )
 
 echo.
 echo [2/3] Downloading FFmpeg to bundle into exe...
@@ -44,7 +46,7 @@ if exist ffmpeg.exe (
 
 echo.
 echo [3/3] Building exe (bundling ffmpeg inside)...
-python -m PyInstaller --onefile --windowed --collect-all yt_dlp ^
+python -m PyInstaller --onefile --windowed --collect-all yt_dlp --collect-all playwright ^
     --add-binary "ffmpeg.exe;." ^
     --add-binary "ffprobe.exe;." ^
     --name DLCart ytdlp_gui.py

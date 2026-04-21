@@ -26,7 +26,10 @@ jobs:
         run: python -m pip install pyinstaller yt-dlp playwright
 
       - name: Install Playwright browsers
-        run: python -m playwright install chromium
+        shell: pwsh
+        run: |
+          $env:PLAYWRIGHT_BROWSERS_PATH = "0"
+          python -m playwright install chromium
 
       - name: Download FFmpeg
         shell: pwsh
@@ -40,7 +43,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          python -m PyInstaller --onefile --windowed --collect-all yt_dlp --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --name DLCart ytdlp_gui.py
+          python -m PyInstaller --onefile --windowed --collect-all yt_dlp --collect-all playwright --add-binary "ffmpeg.exe;." --add-binary "ffprobe.exe;." --name DLCart ytdlp_gui.py
 
       - name: Release
         uses: softprops/action-gh-release@v2
